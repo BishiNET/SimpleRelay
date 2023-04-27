@@ -1,6 +1,6 @@
 //go:build aix || freebsd || linux || netbsd
 
-package simplerelay
+package main
 
 import (
 	"time"

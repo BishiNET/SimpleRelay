@@ -1,6 +1,6 @@
 //go:build !linux
 
-package simplerelay
+package main
 
 func NewEpollRoutine() (Epoll, error) {
 	return nil, nil

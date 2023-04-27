@@ -1,6 +1,6 @@
 //go:build linux
 
-package simplerelay
+package main
 
 import (
 	"context"
