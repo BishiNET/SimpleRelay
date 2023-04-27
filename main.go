@@ -24,7 +24,7 @@ func main() {
 		log.Fatal("cannot enable epoll, which is used in linux only")
 	}
 	var err error
-	var ep *epollRoutine
+	var ep Epoll
 	if EnableEpoll {
 		ep, err = NewEpollRoutine()
 		if err != nil {
@@ -56,3 +56,4 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 }
+

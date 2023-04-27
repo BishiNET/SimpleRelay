@@ -90,7 +90,7 @@ type hijack struct {
 	Conn net.Conn
 }
 
-func NewEpollRoutine() (*epollRoutine, error) {
+func NewEpollRoutine() (Epoll, error) {
 	epfd, errno := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if errno != nil {
 		return nil, ErrEpollCreate
@@ -155,3 +155,4 @@ retry:
 		}
 	}
 }
+
