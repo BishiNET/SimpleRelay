@@ -46,7 +46,7 @@ func main() {
 	}
 	defer func() {
 		if EnableEpoll {
-			ep.Close()
+			ep.Shutdown()
 		}
 		for _, r := range relayGroup {
 			r.Close()

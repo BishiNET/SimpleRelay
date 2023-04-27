@@ -1,4 +1,5 @@
-//go:build !linux || !netbsd || !freebsd || !aix
+//go:build !linux && !netbsd && !freebsd && !aix
+
 package simplerelay
 
 import (
