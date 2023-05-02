@@ -1,4 +1,4 @@
-package simplerelay
+package main
 
 import (
 	"encoding/json"
