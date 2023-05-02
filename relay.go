@@ -125,7 +125,7 @@ func (u *udpRelay) Add(local, remote string) {
 	if err != nil {
 		log.Fatal("UDP Listen: ", err)
 	}
-	uc := &udpContext{l, haxmap.New(), u.timeout}
+	uc := &udpContext{l, haxmap.New[string, net.PacketConn](), u.timeout}
 	u.local = append(u.local, uc)
 	go u.RunUDP(uc, remote)
 }
