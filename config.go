@@ -1,4 +1,4 @@
-package main
+package simplerelay
 
 import (
 	"encoding/json"
@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	DEFAULT_TIMEOUT   = 5 * time.Second
-	DEFAULT_KEEPALIVE = 30 * time.Second
+	DEFAULT_TIMEOUT    = 5 * time.Second
+	DEFAULT_KEEPALIVE  = 30 * time.Second
+	DEFAULT_UDPTIMEOUT = 5 * time.Minute
 )
 
 type SingleRelay struct {
@@ -23,6 +24,8 @@ type SingleRelay struct {
 	Timeout     time.Duration `json:"timeout"`
 	Keepalive   time.Duration `json:"keepalive"`
 	KeepIDLE    time.Duration `json:"keepidle"`
+	UDP         bool          `json:"udp"`
+	UDPTimeout  time.Duration `json:"udptimeout"`
 }
 type Config []*SingleRelay
 
@@ -39,7 +42,7 @@ func multi(needle string) [][]string {
 			to := rg[1]
 			fromPort, _ := strconv.Atoi(from)
 			toPort, _ := strconv.Atoi(to)
-			for port := fromPort + 1; port <= toPort; port++ {
+			for port := fromPort + 1; port < toPort; port++ {
 				locals[index] = append(locals[index], fmt.Sprintf("%s:%d", host, port))
 			}
 		}
@@ -89,6 +92,13 @@ func ReadConfig(f string) Config {
 		if r.KeepIDLE != 0 {
 			r.KeepIDLE *= time.Second
 		}
+		// RFC 4783: the UDP timeout of a NAT should not be smaller than 2 minutes (120 seconds)
+		if r.UDPTimeout == 0 || r.UDPTimeout < 120 {
+			r.UDPTimeout = DEFAULT_UDPTIMEOUT
+		} else {
+			r.UDPTimeout *= time.Second
+		}
 	}
 	return c
 }
+

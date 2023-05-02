@@ -1,4 +1,4 @@
-package main
+package simplerelay
 
 import (
 	"context"
@@ -12,9 +12,15 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/BishiNET/SimpleRelay/mempool"
+	"github.com/alphadose/haxmap"
 )
 
-const ENABLE_LOG = false
+const (
+	ENABLE_LOG      = false
+	UDP_MAX_PAYLOAD = 64 * 1024
+)
 
 var (
 	logger  = log.New(os.Stderr, "", log.Lshortfile|log.LstdFlags)
@@ -25,8 +31,21 @@ var (
 	}
 )
 
+type udpContext struct {
+	l       net.PacketConn
+	nat     *haxmap.Map[string, net.PacketConn]
+	timeout time.Duration
+}
+
+type udpRelay struct {
+	close   context.Context
+	local   []*udpContext
+	timeout time.Duration
+}
+
 type Relay struct {
 	r          *SingleRelay
+	udp        *udpRelay
 	listener   []net.Listener
 	dialer     *net.Dialer
 	is         context.Context
@@ -63,6 +82,10 @@ func printErr(err error) {
 	}
 }
 
+func showLog(c string) {
+	logger.Output(2, c)
+}
+
 func connToString(c net.Conn) string {
 	return c.LocalAddr().Network() + " -> " + c.RemoteAddr().String()
 }
@@ -93,6 +116,31 @@ func relayErr(local, remote net.Conn, err ...error) {
 
 }
 
+func newUDP(ctx context.Context, timeout time.Duration) *udpRelay {
+	return &udpRelay{close: ctx, timeout: timeout}
+}
+
+func (u *udpRelay) Add(local, remote string) {
+	l, err := net.ListenPacket("udp", local)
+	if err != nil {
+		log.Fatal("UDP Listen: ", err)
+	}
+	uc := &udpContext{l, haxmap.New(), u.timeout}
+	u.local = append(u.local, uc)
+	go u.RunUDP(uc, remote)
+}
+
+func (u *udpRelay) Close() {
+	for _, uc := range u.local {
+		uc.l.Close()
+		uc.nat.ForEach(func(_ string, pc net.PacketConn) bool {
+			// force to wake up.
+			pc.Close()
+			return true
+		})
+	}
+}
+
 func NewRelay(r *SingleRelay) *Relay {
 	ry := &Relay{
 		r: r,
@@ -118,6 +166,12 @@ func NewRelay(r *SingleRelay) *Relay {
 			}
 		})
 	}
+	ENABLE_UDP := r.UDP
+
+	if ENABLE_UDP {
+		ry.udp = newUDP(ry.is, r.UDPTimeout)
+	}
+
 	for i, singleLocal := range localGroups {
 		if len(singleLocal) != len(remoteGroups[i]) {
 			log.Fatalf("Relay: Local: %v doesn't match with the remote peer: %v.", singleLocal, remoteGroups[i])
@@ -129,6 +183,10 @@ func NewRelay(r *SingleRelay) *Relay {
 			}
 			ry.listener = append(ry.listener, l)
 			go ry.Run(l, remoteGroups[i][j])
+
+			if ENABLE_UDP {
+				ry.udp.Add(local, remoteGroups[i][j])
+			}
 		}
 	}
 	return ry
@@ -182,9 +240,12 @@ func (r *Relay) Close() {
 	for _, l := range r.listener {
 		l.Close()
 	}
+	if r.r.UDP {
+		r.udp.Close()
+	}
 }
 func (r *Relay) Run(l net.Listener, remote string) {
-	logger.Output(2, fmt.Sprintf("Relay: %s <-> %s", l.Addr().String(), remote))
+	showLog(fmt.Sprintf("Relay: %s <-> %s", l.Addr().String(), remote))
 retry:
 	for {
 		c, err := l.Accept()
@@ -200,3 +261,81 @@ retry:
 		go r.HandleTCPConn(c, remote)
 	}
 }
+
+func (u *udpRelay) RunUDP(ctx *udpContext, remote string) {
+	showLog(fmt.Sprintf("UDP Relay: %s <-> %s", ctx.l.LocalAddr(), remote))
+	buf := make([]byte, UDP_MAX_PAYLOAD)
+	dst, err := net.ResolveUDPAddr("udp", remote)
+	if err != nil {
+		log.Fatal(err)
+	}
+retry:
+	for {
+		n, source, err := ctx.l.ReadFrom(buf)
+		if err != nil {
+			select {
+			case <-u.close.Done():
+				return
+			default:
+				printErr(err)
+				continue retry
+			}
+		}
+		src, ok := ctx.nat.Get(source.String())
+		if !ok {
+			src = ctx.newSource(u.close, ctx.l, source.String())
+			if src == nil {
+				continue retry
+			}
+		}
+		if _, err := src.WriteTo(buf[0:n], dst); err != nil {
+			printErr(err)
+			continue retry
+		}
+	}
+}
+
+func (u *udpContext) newSource(close context.Context, c net.PacketConn, source string) net.PacketConn {
+	r, err := net.ListenPacket("udp", "")
+	if err != nil {
+		printErr(err)
+		return nil
+	}
+	defer u.nat.Set(source, r)
+	go u.runSource(close, source, r, c)
+	return r
+}
+
+func (u *udpContext) runSource(close context.Context, src string, s, c net.PacketConn) {
+	// a peer may not be persistent.
+	// we need to reuse the buffer to aovid GC.
+	buf := mempool.Get(UDP_MAX_PAYLOAD)
+	defer mempool.Put(buf)
+
+	defer func() {
+		select {
+		case <-close.Done():
+		default:
+			u.nat.Del(src)
+			s.Close()
+		}
+	}()
+
+	srcAddr, err := net.ResolveUDPAddr("udp", src)
+	if err != nil {
+		printErr(err)
+		return
+	}
+
+	for {
+		s.SetReadDeadline(time.Now().Add(u.timeout))
+		n, _, err := s.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		if _, err := c.WriteTo(buf[0:n], srcAddr); err != nil {
+			return
+		}
+	}
+}
+
